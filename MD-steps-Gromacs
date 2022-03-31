@@ -1,0 +1,111 @@
+
+
+第一步: 获取并处理pdb文件
+
+第二步: 用pdb2gmx获得拓扑文件
+       gmx_mpi pdb2gmx -f 6m0j.pdb -o 6m0j.gro -p 6m0j.top -ignh -his ?posre -posrefc 100
+       选择力场6（amber99sb-ildn）,水模型3(TIPS3P),根据Pka值确定组氨酸原子替换.
+第三步: 创建模拟盒子
+       gmx_mpi editconf -f 6m0j.gro -o 6m0jbox.gro -bt dodecahedron -d 0.8
+
+第五步: 向盒子中填充溶剂及离子并进行能量最小化
+(1) 溶剂:
+        gmx_mpi solvate -cp 6m0jbox.gro -cs spc216.gro -o 6m0jsol.gro -p 6m0j.top
+
+(2) 离子
+        gmx_mpi grompp -f em-ion-steep.mdp -c 6m0jsol.gro -p 6m0j.top -o 6m0jpr.tpr
+        gmx_mpi genion -s 6m0jpr.tpr -o 6m0j-steep-ion.gro -neutral -conc 0.15 -p 6m0j.top
+        (选择组16 SOL)
+        
+(3) 能量最小化
+        gmx_mpi grompp -f em-ion-steep.mdp -c 6m0j-steep-ion.gro -p 6m0j.top -o 6m0j-steep-ion.tpr
+        gmx_mpi mdrun -v -s 6m0j-steep-ion.tpr -o 6m0j-steep-ion.trr -c 6m0j-steep-ion.gro -g steep-ion.log -e steep-ion.edr 
+        
+        gmx_mpi grompp -f em-ion-cg.mdp -c 6m0j-steep-ion.gro -p 6m0j.top -o 6m0j-cg-ion.tpr
+        gmx_mpi mdrun -v -s 6m0j-cg-ion.tpr -o 6m0j-cg-ion.trr -c 6m0j-cg-ion.gro -g cg-ion.log -e cg-ion.edr
+
+        
+第六步: 位置限制性预平衡模拟
+(1) NVT:
+(a)     
+        gmx_mpi grompp -f equil-nvt-1.mdp -c 6m0j-cg-ion.gro -r 6m0j-cg-ion.gro -p 6m0j.top -o 6m0j-nvt-pr1000.tpr 
+        gmx_mpi mdrun -v -s 6m0j-nvt-pr1000.tpr -o 6m0j-nvt-pr1000.trr -c 6m0j-nvt-pr1000.gro -g nvt-pr1000.log -e nvt-pr1000.edr  -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+        
+(b)     
+        python position_restrain_force.py posre_Ion_chain_A2.itp 1000 100
+        python position_restrain_force.py posre_Protein_chain_A.itp 1000 100
+        python position_restrain_force.py posre_Protein_chain_E.itp 1000 100
+        gmx_mpi grompp -f equil-nvt-2.mdp -c 6m0j-nvt-pr1000.gro -p 6m0j.top -o 6m0j-nvt-pr100.tpr
+        gmx_mpi mdrun -v -s 6m0j-nvt-pr100.tpr -o 6m0j-nvt-pr100.trr -c 6m0j-nvt-pr100.gro -g nvt-pr100.log -e nvt-pr100.edr  -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+        
+(c)     
+        python position_restrain_force.py posre_Ion_chain_A2.itp 100 10
+        python position_restrain_force.py posre_Protein_chain_A.itp 100 10
+        python position_restrain_force.py posre_Protein_chain_E.itp 100 10
+        gmx_mpi grompp -f equil-nvt-2.mdp -c 6m0j-nvt-pr100.gro -p 6m0j.top -o 6m0j-nvt-pr10.tpr
+        gmx_mpi mdrun -v -s 6m0j-nvt-pr10.tpr -o 6m0j-nvt-pr10.trr -c 6m0j-nvt-pr10.gro -g nvt-pr10.log -e nvt-pr10.edr  -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+        
+(d)     
+        python position_restrain_force.py posre_Ion_chain_A2.itp 10 0
+        python position_restrain_force.py posre_Protein_chain_A.itp 10 0
+        python position_restrain_force.py posre_Protein_chain_E.itp 10 0
+        gmx_mpi grompp -f equil-nvt-2.mdp -c 6m0j-nvt-pr10.gro -p 6m0j.top -o 6m0j-nvt-pr0.tpr
+        gmx_mpi mdrun -v -s 6m0j-nvt-pr0.tpr -o 6m0j-nvt-pr0.trr -c 6m0j-nvt-pr0.gro -g nvt-pr0.log -e nvt-pr0.edr  -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+        
+(2) NPT:
+(a)
+        python position_restrain_force.py posre_Ion_chain_A2.itp 0 1000
+        python position_restrain_force.py posre_Protein_chain_A.itp 0 1000
+        python position_restrain_force.py posre_Protein_chain_E.itp 0 1000
+        gmx_mpi grompp -f equil-npt.mdp -c 6m0j-nvt-pr0.gro -r 6m0j-nvt-pr0.gro -p 6m0j.top -o 6m0j-npt-pr1000.tpr
+        gmx_mpi mdrun -v -s 6m0j-npt-pr1000.tpr -o 6m0j-npt-pr1000.trr -c 6m0j-npt-pr1000.gro -g npt-pr1000.log -e npt-pr1000.edr  -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+(b)
+        gmx_mpi genrestr -f 6m0j-npt-pr1000.gro -n 6m0j-ca.ndx -o posre.itp -fc 100 100 100
+        gmx_mpi grompp -f equil-npt.mdp -c 6m0j-nvt-pr1000.gro -p 6m0j.top -o 6m0j-npt-pr100.tpr
+        gmx_mpi mdrun -v -s 6m0j-npt-pr100.tpr -o 6m0j-npt-pr100.trr -c 6m0j-npt-pr100.gro -g npt-pr100.log -e npt-pr100.edr -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+(c)
+        gmx_mpi genrestr -f 6m0j-npt-pr100.gro -n 6m0j-ca.ndx -o posre.itp -fc 10 10 10
+        gmx_mpi grompp -f equil-npt.mdp -c 6m0j-nvt-pr100.gro -p 6m0j.top -o 6m0j-npt-pr10.tpr
+        gmx_mpi mdrun -v -s 6m0j-npt-pr10.tpr -o 6m0j-npt-pr10.trr -c 6m0j-npt-pr10.gro -g npt-pr10.log -e npt-pr10.edr -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+(d)
+        gmx_mpi genrestr -f 6m0j-npt-pr10.gro -n 6m0j-ca.ndx -o posre.itp -fc 0 0 0
+        gmx_mpi grompp -f equil-npt.mdp -c 6m0j-npt-pr10.gro -p 6m0j.top -o 6m0j-npt-pr0.tpr
+        gmx_mpi mdrun -v -s 6m0j-npt-pr0.tpr -o 6m0j-npt-pr0.trr -c 6m0j-npt-pr0.gro -g npt-pr0.log -e npt-pr0.edr -ntmpi 8 -ntomp 9 -gpu_id 01230123
+
+第七步: 成品模拟
+        gmx_mpi grompp -f md-npt-amber.mdp -c 6m0j-npt-pr0.gro -r 6m0j-npt-pr0.gro -p 6m0j.top -o 6m0j-npt-md.tpr
+        nohup gmx_mpi mdrun -v -s 6m0j-npt-md.tpr -o 6m0j-npt-md.trr -c 6m0j-npt-md.gro -g npt-md.log -e npt-md.edr -ntmpi 8 -ntomp 9 -gpu_id 01230123 &
+
+        
+恢复轨迹(需要尝试，用vmd查看轨迹是否成功恢复)       
+        gmx_mpi trjconv -s 6m0j-npt-md.tpr -f 6m0j-npt-md.trr -o 6m0j-npt-md.xtc -pbc res -ur compact -center -boxcenter rect -fit rot+trans
+
+gmx_mpi trjconv -s 6m0j-npt-md.tpr -f 6m0j-npt-md.trr -o 6m0j-gro.pdb -pbc res -ur compact -center -boxcenter rect -fit trans -skip 1000 -sep -n 
+
+
+
+notes for trjconv:
+true:gmx_mpi trjconv -s 6m0jsol.tpr -f 6m0jsol.gro -o 6m0jsol1.gro -pbc mol -ur compact -center -boxcenter rect -fit trans
+
+no:gmx_mpi trjconv -s 6m0j-npt-md1.tpr -f 6m0j-npt-md1.gro -o 6m0j-npt-md1zp1.gro -pbc atom -ur compact -center -boxcenter rect
+ok:gmx_mpi trjconv -s 6m0j-npt-md1.tpr -f 6m0j-npt-md1.trr -o 6m0j-npt-md-new1.trr -pbc nojump -ur compact -center -boxcenter rect -fit trans
+ok:gmx_mpi trjconv -s 6m0j-npt-md1.tpr -f 6m0j-npt-md1.gro -o 6m0j-npt-md1zp1.gro -pbc nojump -ur compact -center -boxcenter rect
+
+gmx_mpi rms -s 6m0j-npt-md1.tpr -f 6m0j-npt-md-new1.trr -o md-new1.xvg
+gmx_mpi trjcat -f 6m0j-npt-md-new1.trr -o 6m0j-balance1.trr -b 6000
+gmx_mpi trjcat -f 6m0j-balance1.trr 6m0j-balance2.trr 6m0j-balance3.trr 6m0j-balance4.trr 6m0j-balance5.trr -o 6m0j-concated.trr -settime
+select 0 and c
+
+
+
+Du's command(true): gmx_mpi trjconv -s 6m0j-npt-md1.tpr -f 6m0j-npt-md1.gro -o 6m0j-npt-md1zp1.gro -pbc mol -ur compact -center -boxcenter rect
+
+        
+
